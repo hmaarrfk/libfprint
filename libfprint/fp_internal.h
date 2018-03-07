@@ -299,6 +299,9 @@ extern struct fp_img_driver vfs301_driver;
 #ifdef ENABLE_VFS5011
 extern struct fp_img_driver vfs5011_driver;
 #endif
+#ifdef ENABLE_VFS7552
+extern struct fp_img_driver vfs7552_driver;
+#endif
 #ifdef ENABLE_UPEKTC_IMG
 extern struct fp_img_driver upektc_img_driver;
 #endif
@@ -497,4 +500,3 @@ int fpi_std_sq_dev(const unsigned char *buf, int size);
 int fpi_mean_sq_diff_norm(unsigned char *buf1, unsigned char *buf2, int size);
 
 #endif
-

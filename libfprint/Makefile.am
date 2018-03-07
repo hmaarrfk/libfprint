@@ -19,6 +19,7 @@ VCOM5S_SRC = drivers/vcom5s.c
 VFS101_SRC = drivers/vfs101.c
 VFS301_SRC = drivers/vfs301.c drivers/vfs301_proto.c  drivers/vfs301_proto.h drivers/vfs301_proto_fragments.h
 VFS5011_SRC = drivers/vfs5011.c drivers/vfs5011_proto.h
+VFS7552_SRC = drivers/vfs7552.c drivers/vfs7552_proto.h
 UPEKTC_IMG_SRC = drivers/upektc_img.c drivers/upektc_img.h
 ETES603_SRC = drivers/etes603.c
 VFS0050_SRC = drivers/vfs0050.c drivers/vfs0050.h
@@ -41,7 +42,8 @@ EXTRA_DIST = \
 	$(VCOM5S_SRC)		\
 	$(VFS101_SRC)		\
 	$(VFS301_SRC)		\
-	$(VFS5011_SRC)		\
+  $(VFS5011_SRC)		\
+  $(VFS7552_SRC)		\
 	$(UPEKTC_IMG_SRC)	\
 	$(ETES603_SRC)		\
 	$(VFS0050_SRC)		\
@@ -178,6 +180,10 @@ endif
 
 if ENABLE_VFS5011
 DRIVER_SRC += $(VFS5011_SRC)
+endif
+
+if ENABLE_VFS7552
+DRIVER_SRC += $(VFS7552_SRC)
 endif
 
 if ENABLE_UPEKTC_IMG

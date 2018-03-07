@@ -22,3 +22,14 @@ install-sh
 .libs
 compile
 ChangeLog
+m4
+.dirstamp
+libfprint.pc
+
+examples/cpp-test
+examples/enroll
+examples/img_capture
+examples/verify
+examples/verify_live
+libfprint/60-fprint-autosuspend.rules
+libfprint/fprint-list-udev-rules

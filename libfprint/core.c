@@ -69,7 +69,7 @@ GSList *opened_devices = NULL;
  *
  * Verification is what most people think of when they think about fingerprint
  * scanning. The process of verification is effectively performing a fresh
- * fingerprint scan, and then comparing that scan to a finger that was 
+ * fingerprint scan, and then comparing that scan to a finger that was
  * previously enrolled.
  *
  * As an example scenario, verification can be used to implement what people
@@ -388,6 +388,9 @@ static struct fp_img_driver * const img_drivers[] = {
 #endif
 #ifdef ENABLE_VFS5011
 	&vfs5011_driver,
+#endif
+#ifdef ENABLE_VFS7552
+	&vfs7552_driver,
 #endif
 #ifdef ENABLE_UPEKTC
 	&upektc_driver,
@@ -969,4 +972,3 @@ API_EXPORTED void fp_exit(void)
 	registered_drivers = NULL;
 	libusb_exit(fpi_usb_ctx);
 }
-
