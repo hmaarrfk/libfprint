@@ -565,6 +565,7 @@ API_EXPORTED struct fp_dscv_dev **fp_discover_devs(void)
 		tmplist = g_slist_prepend(tmplist, (gpointer) ddev);
 		dscv_count++;
 	}
+	libusb_free_device_list(devs, 1);
 
 	/* Convert our temporary GSList into a standard NULL-terminated pointer
 	 * array. */
