@@ -33,3 +33,4 @@ examples/verify
 examples/verify_live
 libfprint/60-fprint-autosuspend.rules
 libfprint/fprint-list-udev-rules
+*.pgm
