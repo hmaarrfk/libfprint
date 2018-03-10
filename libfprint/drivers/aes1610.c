@@ -733,7 +733,7 @@ static const struct aes_regwrite init[] = {
 	{ 0x82, 0x00 }
 };
 
-static const struct aes_regwrite stop_reader[] = {
+static const struct aes_regwrite stop_reader[] __attribute__((unused)) = {
 	{ 0xFF, 0x00 }
 };
 
@@ -851,4 +851,3 @@ struct fp_img_driver aes1610_driver = {
 	.activate = dev_activate,
 	.deactivate = dev_deactivate,
 };
-

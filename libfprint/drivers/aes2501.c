@@ -253,7 +253,7 @@ static int sum_histogram_values(unsigned char *data, uint8_t threshold)
 	/* FIXME endianness */
 	for (i = threshold; i < 16; i++)
 		r += histogram[i];
-	
+
 	return r;
 }
 
@@ -668,7 +668,7 @@ static const struct aes_regwrite init_2[] = {
 	{ AES2501_REG_CTRL1, AES2501_CTRL1_REG_UPDATE },
 };
 
-static const struct aes_regwrite init_3[] = {
+static const struct aes_regwrite init_3[] __attribute__((unused)) = {
 	{ 0xff, 0x00 },
 	{ AES2501_REG_CTRL1, AES2501_CTRL1_MASTER_RESET },
 	{ AES2501_REG_AUTOCALOFFSET, 0x41 },
@@ -889,4 +889,3 @@ struct fp_img_driver aes2501_driver = {
 	.activate = dev_activate,
 	.deactivate = dev_deactivate,
 };
-
