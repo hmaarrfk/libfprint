@@ -26,16 +26,49 @@
  */
 
 /* Mark's personal notes:
-  the skeleton for this was taken from 5011.
-  I realize now that it is a swiping sensor, which might not be the best one to emulate
-  The issue with swiping sensors is that they require some kind of stitching between lines
-  Therefore, the algorithm needs to be clever in how it puts the final image together.
+  I'm not sure how this library will work after you wake up from sleep.
+  I have everything put in open, but maybe it should be init.
 
-  The press type device is thus much easier to use.
-  It might be better to emulate FP_SCAN_TYPE_PRESS devices
+  This sensor has a VERY small pixel count compared to other sensors.
+  Specifically, it is only 112x112.
+  The library that is used for detection actually prunes the image to
+  96x96 and discardst the edges (pad_uchar_image).
+  You can see this when you print a binarized image.
+  ```
+  img_bin = fp_img_binarize(img);
+  fp_img_save_to_file(img_bin, "bin.pgm");
+  ```
 
-  I think it might be time to look at the uru4000 for more understanding
-  on how a touch sensor works
+  The challenge comes in when you consider that the sensor is only 1 cm wide.
+  Now it becomes very difficult for the algorithm to find MINUTIAE.
+  libfprint uses 10 minimum MINUTIAE. (MIN_ACCEPTABLE_MINUTIAE)
+  I normally find 2-4 on my finger, sometimes 5, and rarely 8.
+
+  This makes the enrollment process VERY tedious, and probably more problematically,
+  the verification process.
+
+  I think a few things can be used to solve this:
+  1. The sensor actually takes something like a video.
+    So you could take a bunch of images, and stitch them together at the driver level.
+    That way you would provide maybe a 200x200 pixel image (users move alot).
+    You probably only need a few more pixels to get the algorithm to stop pruning
+    the image so much.
+  2. You could try to create a composite image in the "enrolled" fingerprint process.
+    This is probably what android does.
+  3. Maybe you can try to further reverse engineer the fingerprint sensor?
+  Maybe it can actually output a few more things.
+  4. Someting else clever?
+
+  I think all these changes would be outside the scope of writing a driver for this.
+  I don't think libfprint is designed to actually record a movie of your fingerprints
+  and get an image. I would have to do it a the driver level. Fun fun.
+
+  A few other issues I found with the library:
+  The number of pixels per inch is hard coded: DEFAULT_PPI = 300
+  look for the line:
+  DEFAULT_PPI / (double)25.4
+
+
 */
 
 #include <stdio.h>
