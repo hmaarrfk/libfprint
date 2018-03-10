@@ -69,7 +69,7 @@ GSList *opened_devices = NULL;
  *
  * Verification is what most people think of when they think about fingerprint
  * scanning. The process of verification is effectively performing a fresh
- * fingerprint scan, and then comparing that scan to a finger that was 
+ * fingerprint scan, and then comparing that scan to a finger that was
  * previously enrolled.
  *
  * As an example scenario, verification can be used to implement what people
@@ -561,6 +561,7 @@ API_EXPORTED struct fp_dscv_dev **fp_discover_devs(void)
 		struct fp_dscv_dev *ddev = discover_dev(udev);
 		if (!ddev)
 			continue;
+		libusb_ref_device(udev);
 		tmplist = g_slist_prepend(tmplist, (gpointer) ddev);
 		dscv_count++;
 	}
@@ -594,8 +595,10 @@ API_EXPORTED void fp_dscv_devs_free(struct fp_dscv_dev **devs)
 	if (!devs)
 		return;
 
-	for (i = 0; devs[i]; i++)
+	for (i = 0; devs[i]; i++){
+		libusb_unref_device(devs[i]->udev);
 		g_free(devs[i]);
+	}
 	g_free(devs);
 }
 
@@ -969,4 +972,3 @@ API_EXPORTED void fp_exit(void)
 	registered_drivers = NULL;
 	libusb_exit(fpi_usb_ctx);
 }
-
