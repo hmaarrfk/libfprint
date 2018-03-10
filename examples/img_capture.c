@@ -28,7 +28,7 @@ struct fp_dscv_dev *discover_device(struct fp_dscv_dev **discovered_devs)
 	struct fp_driver *drv;
 	if (!ddev)
 		return NULL;
-	
+
 	drv = fp_dscv_dev_get_driver(ddev);
 	printf("Found device claimed by %s driver\n", fp_driver_get_full_name(drv));
 	return ddev;
@@ -57,6 +57,7 @@ int main(void)
 
 	ddev = discover_device(discovered_devs);
 	if (!ddev) {
+    fp_dscv_devs_free(discovered_devs);
 		fprintf(stderr, "No devices detected.\n");
 		goto out;
 	}
@@ -102,4 +103,3 @@ out:
 	fp_exit();
 	return r;
 }
-
