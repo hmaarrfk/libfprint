@@ -830,7 +830,9 @@ static void dev_deactivate(struct fp_img_dev *dev)
 }
 
 static const struct usb_id id_table[] = {
-	{ .vendor = 0x138a, .product = 0x0091 /* Validity device from some Dell XPS laptops (9560, 9360 at least) */ },
+  // Until you can reliably detect a fingerprint,
+  // we should not ship this driver for any device.
+	//{ .vendor = 0x138a, .product = 0x0091 /* Validity device from some Dell XPS laptops (9560, 9360 at least) */ },
 	{ 0, 0, 0, },
 };
 
