@@ -48,8 +48,6 @@
 
 #include "vfs7552_proto.h"
 
-// THis is not applicable for this device
-#define CAPTURE_LINES 1
 #define VFS7552_CONTROL_PIXELS (8)
 #define VFS7552_LINE_SIZE (VFS7552_IMAGE_WIDTH + VFS7552_CONTROL_PIXELS)
 
@@ -113,7 +111,6 @@ struct usbexchange_data {
 	int timeout;
 };
 
-static void start_scan(struct fp_img_dev *dev);
 
 static void async_send_cb(struct libusb_transfer *transfer)
 {
@@ -296,6 +293,7 @@ static void usb_exchange_async(struct fpi_ssm *ssm,
 
 struct vfs7552_data {
 	unsigned char *image;
+  enum fp_imgdev_state activate_state;
   int image_index;
 	unsigned char *capture_buffer;
 	int chunks_captured;
@@ -307,16 +305,30 @@ struct vfs7552_data {
 
 enum {
 	DEV_ACTIVATE_REQUEST_FPRINT,
-	DEV_ACTIVATE_INIT_COMPLETE,
-  DEV_ACTIVATE_WAIT_FINGER,
-  DEV_ACTIVATE_ASK_FOR_CHUNK,
-	DEV_ACTIVATE_READ_DATA,
-	DEV_ACTIVATE_DATA_COMPLETE,
-  DEV_ACTIVATE_TIMEOUT,
-	DEV_ACTIVATE_PREPARE_NEXT_CAPTURE,
 	DEV_ACTIVATE_NUM_STATES
 };
 
+enum{
+  DEACTIVATE_SEND_SHUTDOWN,
+  DEACTIVATE_NUM_STATES
+};
+enum {
+  AWAIT_FINGER_ON_INIT,
+  AWAIT_FINGER_ON_INTERRUPT_QUERY,
+  AWAIT_FINGER_ON_INTERRUPT_CHECK,
+  AWAIT_FINGER_ON_NUM_STATES
+};
+
+enum {
+  CAPTURE_QUERY_DATA_READY,
+  CAPTURE_CHECK_DATA_READY,
+  CAPTURE_REQUEST_CHUNK,
+  CAPTURE_READ_CHUNK,
+  CAPTURE_COMPLETE,
+  CAPTURE_DISABLE_SENSOR,
+  CAPTURE_DISABLE_COMPLETE,
+  CAPTURE_NUM_STATES
+};
 enum {
 	DEV_OPEN_START,
 	DEV_OPEN_NUM_STATES
@@ -329,22 +341,45 @@ static void capture_init(struct vfs7552_data *data)
   data->chunks_captured = 0;
 }
 
-void submit_image(struct fpi_ssm *ssm, struct vfs7552_data *data)
+
+void report_finger_off(struct fpi_ssm *ssm){
+  struct fp_img_dev *dev = (struct fp_img_dev *)ssm->priv;
+
+  fpi_imgdev_report_finger_status(dev, FALSE);
+  fpi_ssm_free(ssm);
+}
+void report_finger_on(struct fpi_ssm *ssm){
+  struct fp_img_dev *dev = (struct fp_img_dev *)ssm->priv;
+
+  fpi_imgdev_report_finger_status(dev, TRUE);
+  fpi_ssm_free(ssm);
+}
+
+void report_deactivate(struct fpi_ssm *ssm){
+  struct fp_img_dev *dev = (struct fp_img_dev *)ssm->priv;
+
+  fpi_imgdev_deactivate_complete(dev);
+  fpi_ssm_free(ssm);
+}
+
+void submit_image(struct fpi_ssm *ssm)
 {
 	struct fp_img_dev *dev = (struct fp_img_dev *)ssm->priv;
+  struct vfs7552_data *data = (struct vfs7552_data *) dev->priv;
 	struct fp_img *img;
 
-  printf("Submitting \n");
-  // TODO: Learn what fp_img is
-  // The image just needs to be passed in near raw form
-  // Maybe skipping the blanking lines on the rows
 	img = fpi_img_new_for_imgdev(dev);
   memcpy(img->data, data->image, VFS7552_IMAGE_SIZE);
 	fp_dbg("Image captured, commiting");
 
 	fpi_imgdev_image_captured(dev, img);
+  fpi_ssm_free(ssm);
 }
 
+enum {
+  CHUNK_READ_FINISHED,
+  CHUNK_READ_NEED_MORE
+};
 
 static int process_chunk(struct vfs7552_data *data, int transferred){
   // TODO
@@ -361,20 +396,17 @@ static int process_chunk(struct vfs7552_data *data, int transferred){
 
   for(i = 0; i < n_lines; i++){
     ptr = ptr + 8; // 8 bytes code at the beginning of each line
-    memcpy(ptr, &data->image[data->image_index], VFS7552_IMAGE_WIDTH);
+    memcpy(&data->image[data->image_index], ptr, VFS7552_IMAGE_WIDTH);
     ptr = ptr + VFS7552_IMAGE_WIDTH;
     data->image_index = data->image_index + VFS7552_IMAGE_WIDTH;
   }
   data->chunks_captured = data->chunks_captured + 1;
-  printf("Chuncks captured %d\n", data->chunks_captured);
   if (data->chunks_captured == VFS7552_IMAGE_CHUNKS){
     data->image_index = 0;
     data->chunks_captured = 0;
-    return 1;
+    return CHUNK_READ_FINISHED;
   }
-
-
-  return 0;
+  return CHUNK_READ_NEED_MORE;
 }
 static void chunk_capture_callback(struct libusb_transfer *transfer)
 {
@@ -384,14 +416,10 @@ static void chunk_capture_callback(struct libusb_transfer *transfer)
 
 	if ((transfer->status == LIBUSB_TRANSFER_COMPLETED) ||
 	    (transfer->status == LIBUSB_TRANSFER_TIMED_OUT)) {
-
-		if (data->capture_buffer[0] ==  data->capture_buffer[1] == 0x00)
-			fpi_imgdev_report_finger_status(dev, TRUE);
-
-		if (process_chunk(data, transfer->actual_length))
-			fpi_ssm_jump_to_state(ssm, DEV_ACTIVATE_DATA_COMPLETE);
+		if (process_chunk(data, transfer->actual_length) == CHUNK_READ_FINISHED)
+      fpi_ssm_next_state(ssm);
 		else
-			fpi_ssm_jump_to_state(ssm, DEV_ACTIVATE_ASK_FOR_CHUNK);
+			fpi_ssm_jump_to_state(ssm, CAPTURE_REQUEST_CHUNK);
 	} else {
 		if (!data->deactivating) {
 			fp_err("Failed to capture data");
@@ -405,12 +433,9 @@ static void chunk_capture_callback(struct libusb_transfer *transfer)
 }
 
 static int capture_chunk_async(struct vfs7552_data *data,
-			       libusb_device_handle *handle, int nline,
+			       libusb_device_handle *handle,
 			       int timeout, struct fpi_ssm *ssm)
 {
-	//fp_dbg("capture_chunk_async: capture %d lines, already have %d",
-	//	nline, data->lines_recorded);
-
 	data->flying_transfer = libusb_alloc_transfer(0);
 	libusb_fill_bulk_transfer(data->flying_transfer, handle,
           VFS7552_IN_ENDPOINT,
@@ -418,13 +443,6 @@ static int capture_chunk_async(struct vfs7552_data *data,
 				  VFS7552_RECEIVE_BUF_SIZE,
 				  chunk_capture_callback, ssm, timeout);
 	return libusb_submit_transfer(data->flying_transfer);
-}
-
-static void async_sleep_cb(void *data)
-{
-	struct fpi_ssm *ssm = data;
-
-	fpi_ssm_next_state(ssm);
 }
 
 /*
@@ -473,18 +491,18 @@ struct usb_action vfs7552_stop_capture[] = {
 
 /* Initiate recording the image */
 struct usb_action vfs7552_initiate_capture[] = {
-	SEND(VFS7552_OUT_ENDPOINT, vfs7552_image_start)
-	RECV(VFS7552_IN_ENDPOINT, 2048)
+  SEND(VFS7552_OUT_ENDPOINT, vfs7552_image_start)
+  RECV_CHECK_SIZE(VFS7552_IN_ENDPOINT, 2048, vfs7552_image_start_resp)
 };
 
-struct usb_action vfs7552_wait_finger[] = {
-  RECV_CHECK(VFS7552_INTERRUPT_ENDPOINT, 8, interrupt1)
-  RECV_CHECK_SIZE(VFS7552_INTERRUPT_ENDPOINT, 8, interrupt2)
-  RECV_CHECK_SIZE(VFS7552_INTERRUPT_ENDPOINT, 8, interrupt3)
+struct usb_action vfs7552_wait_finger_init[] = {
+  RECV_CHECK_SIZE(VFS7552_INTERRUPT_ENDPOINT, 8, interrupt_ok)
+};
+struct usb_action vfs7552_data_ready_query[] = {
   SEND(VFS7552_OUT_ENDPOINT, vfs7552_is_image_ready)
-  RECV_CHECK(VFS7552_IN_ENDPOINT, 64, vfs7552_is_image_ready_resp_ready)
-};
+  RECV_CHECK_SIZE(VFS7552_IN_ENDPOINT, 64, vfs7552_is_image_ready_resp_ready)
 
+};
 struct usb_action vfs7552_request_chunk[] = {
   SEND(VFS7552_OUT_ENDPOINT, vfs7552_read_image_chunk)
 };
@@ -492,146 +510,159 @@ struct usb_action vfs7552_request_chunk[] = {
 
 /* ====================== lifprint interface ======================= */
 
-static void activate_loop2(struct fpi_ssm *ssm){
-  struct fp_img_dev *dev = (struct fp_img_dev *)ssm->priv;
-	struct vfs7552_data *data = (struct vfs7552_data *)dev->priv;
-  fp_dbg("main_loop: state %d", ssm->cur_state);
 
-  switch (ssm->cur_state) {
-    default:
-    printf("State : %d", ssm->cur_state);
-      fpi_ssm_next_state(ssm);
+static void await_finger_on_run_state(struct fpi_ssm *ssm){
+  unsigned char * receive_buf;
+  struct fp_img_dev *dev = (struct fp_img_dev*)ssm->priv;
+  struct vfs7552_data *data = (struct vfs7552_data*)dev->priv;
+  fp_dbg("state %d", ssm->cur_state);
+
+  switch (ssm->cur_state){
+    case AWAIT_FINGER_ON_INIT:
+      data->init_sequence.stepcount =
+  			array_n_elements(vfs7552_initiate_capture);
+  		data->init_sequence.actions = vfs7552_initiate_capture;
+  		data->init_sequence.timeout = 1000;
+  		usb_exchange_async(ssm, &data->init_sequence);
+      break;
+    case AWAIT_FINGER_ON_INTERRUPT_QUERY:
+      data->init_sequence.stepcount =
+        array_n_elements(vfs7552_wait_finger_init);
+      data->init_sequence.actions = vfs7552_wait_finger_init;
+      data->init_sequence.timeout = 0; // Do not time out
+      usb_exchange_async(ssm, &data->init_sequence);
+      break;
+    case AWAIT_FINGER_ON_INTERRUPT_CHECK:
+      receive_buf = ((unsigned char *)data->init_sequence.receive_buf);
+      if(receive_buf[0] == interrupt_ok[0]){
+        // This seems to mean: "Sensor is all good"
+        fpi_ssm_jump_to_state(ssm, AWAIT_FINGER_ON_INTERRUPT_QUERY);
+      } else if(receive_buf[0] == interrupt_ready[0]){
+        // This seems to mean: "We detected a finger"
+        fpi_ssm_next_state(ssm);
+      } else if(receive_buf[0] == interrupt_dont_ask[0]){
+        // THis seems to mean: "We already told you we detected a finger, stop asking us"
+        // It will not respond to an other request on the interrupt endpoint
+        fpi_ssm_next_state(ssm);
+      } else {
+        fp_dbg("Unknown response 0x%02x", receive_buf[0]);
+        fpi_ssm_next_state(ssm);
+      }
       break;
   }
 }
-static void activate_loop(struct fpi_ssm *ssm)
-{
-	enum {READ_TIMEOUT = 0};
 
-	struct fp_img_dev *dev = (struct fp_img_dev *)ssm->priv;
-	struct vfs7552_data *data = (struct vfs7552_data *)dev->priv;
-	int r;
-	struct fpi_timeout *timeout;
+static void capture_run_state(struct fpi_ssm *ssm){
+  struct fp_img_dev *dev = (struct fp_img_dev*)ssm->priv;
+  struct vfs7552_data *data = (struct vfs7552_data*)dev->priv;
+  unsigned char * receive_buf;
+  int r;
+  fp_dbg("state %d", ssm->cur_state);
 
-	fp_dbg("main_loop: state %d", ssm->cur_state);
-
-	if (data->deactivating) {
-		fp_dbg("deactivating, marking completed");
-		fpi_ssm_mark_completed(ssm);
-		return;
-	}
-
-  if (data->init_sequence.receive_buf != NULL)
-    g_free(data->init_sequence.receive_buf);
-  data->init_sequence.receive_buf = NULL;
-
-	switch (ssm->cur_state) {
-	case DEV_ACTIVATE_REQUEST_FPRINT:
-    printf("GOT HERE BITCH\n");
-		data->init_sequence.stepcount =
-			array_n_elements(vfs7552_initiate_capture);
-		data->init_sequence.actions = vfs7552_initiate_capture;
-		data->init_sequence.device = dev;
-		data->init_sequence.receive_buf =
-			g_malloc0(VFS7552_RECEIVE_BUF_SIZE);
-		data->init_sequence.timeout = 1000;
-		usb_exchange_async(ssm, &data->init_sequence);
-		break;
-
-	case DEV_ACTIVATE_INIT_COMPLETE:
-		fpi_imgdev_activate_complete(dev, 0);
-		fpi_ssm_next_state(ssm);
-		break;
-
-  case DEV_ACTIVATE_WAIT_FINGER:
-		data->init_sequence.stepcount =
-			array_n_elements(vfs7552_wait_finger);
-		data->init_sequence.actions = vfs7552_wait_finger;
-		data->init_sequence.device = dev;
-		data->init_sequence.receive_buf =
-			g_malloc0(VFS7552_RECEIVE_BUF_SIZE);
-		data->init_sequence.timeout = 0; // Don't time out during interrupt
-		usb_exchange_async(ssm, &data->init_sequence);
-		break;
-
-  case DEV_ACTIVATE_ASK_FOR_CHUNK:
+  switch (ssm->cur_state){
+  case CAPTURE_QUERY_DATA_READY:
+    data->init_sequence.stepcount =
+      array_n_elements(vfs7552_data_ready_query);
+    data->init_sequence.actions = vfs7552_data_ready_query;
+    data->init_sequence.timeout = 0; // Do not time out
+    usb_exchange_async(ssm, &data->init_sequence);
+    break;
+  case CAPTURE_CHECK_DATA_READY:
+    receive_buf = ((unsigned char *)data->init_sequence.receive_buf);
+    if(receive_buf[0] == vfs7552_is_image_ready_resp_not_ready[0]){
+      fpi_ssm_jump_to_state(ssm, CAPTURE_QUERY_DATA_READY);
+    } else if(receive_buf[0] == vfs7552_is_image_ready_resp_ready[0]){
+      capture_init(data);
+      fpi_ssm_next_state(ssm);
+    } else if(receive_buf[0] == vfs7552_is_image_ready_resp_finger_off[0]){
+      fpi_ssm_jump_to_state(ssm, CAPTURE_DISABLE_SENSOR);
+    } else {
+      fp_dbg("Unknown response 0x%02x", receive_buf[0]);
+      r = receive_buf[0];
+      fpi_imgdev_session_error(dev, r);
+      fpi_ssm_mark_aborted(ssm, r);
+    }
+    break;
+  case CAPTURE_REQUEST_CHUNK:
+    fp_dbg("Requesting chunk");
     data->init_sequence.stepcount =
       array_n_elements(vfs7552_request_chunk);
     data->init_sequence.actions = vfs7552_request_chunk;
-    data->init_sequence.device = dev;
-    data->init_sequence.receive_buf =
-      g_malloc0(VFS7552_RECEIVE_BUF_SIZE);
     data->init_sequence.timeout = 1000;
     usb_exchange_async(ssm, &data->init_sequence);
     break;
+  case CAPTURE_READ_CHUNK:
+    r = capture_chunk_async(data, dev->udev,
+          1000, ssm);
+    if (r != 0) {
+      fp_err("Failed to capture data");
+      fpi_imgdev_session_error(dev, r);
+      fpi_ssm_mark_aborted(ssm, r);
+    }
+    break;
+  case CAPTURE_COMPLETE:
+    if(data->activate_state == IMGDEV_STATE_CAPTURE){
+      fpi_ssm_mark_completed(ssm);
+    } else if(data->activate_state == IMGDEV_STATE_AWAIT_FINGER_OFF){
+      int mean = 0;
+      int variance = 0;
 
-  case DEV_ACTIVATE_READ_DATA:
-		r = capture_chunk_async(data, dev->udev, CAPTURE_LINES,
-					READ_TIMEOUT, ssm);
-		if (r != 0) {
-			fp_err("Failed to capture data");
-			fpi_imgdev_session_error(dev, r);
-			fpi_ssm_mark_aborted(ssm, r);
-		}
-		break;
+      for(int i = 0; i < VFS7552_IMAGE_SIZE; i++)
+        mean = mean + data->image[i];
+      mean = mean / VFS7552_IMAGE_SIZE;
 
-	case DEV_ACTIVATE_DATA_COMPLETE:
-    printf("Oh my\n");
-    data->init_sequence.stepcount =
-      array_n_elements(vfs7552_stop_capture);
-    data->init_sequence.actions = vfs7552_stop_capture;
-    data->init_sequence.device = dev;
-    data->init_sequence.receive_buf =
-      g_malloc0(VFS7552_RECEIVE_BUF_SIZE);
-    data->init_sequence.timeout = 1000;
-    usb_exchange_async(ssm, &data->init_sequence);
+      for(int i = 0; i < VFS7552_IMAGE_SIZE; i++)
+        variance = variance + (data->image[i] - mean) * (data->image[i] - mean);
+      variance = variance / (VFS7552_IMAGE_SIZE - 1);
 
-  case DEV_ACTIVATE_TIMEOUT:
-		timeout = fpi_timeout_add(1, async_sleep_cb, ssm);
+      fp_dbg("mean = %d, variance = %d\n", mean, variance);
 
-		if (timeout == NULL) {
-			/* Failed to add timeout */
-			fp_err("failed to add timeout");
-			fpi_imgdev_session_error(dev, -1);
-			fpi_ssm_mark_aborted(ssm, -1);
-		}
-		break;
+      if(variance < 20)
+        fpi_ssm_jump_to_state(ssm, CAPTURE_DISABLE_SENSOR);
+      else
+        fpi_ssm_jump_to_state(ssm, CAPTURE_QUERY_DATA_READY);
+    }
+    break;
 
-	case DEV_ACTIVATE_PREPARE_NEXT_CAPTURE:
-		fpi_ssm_mark_completed(ssm);
-		break;
-
-	}
+    case CAPTURE_DISABLE_SENSOR:
+      data->init_sequence.stepcount =
+        array_n_elements(vfs7552_stop_capture);
+      data->init_sequence.actions = vfs7552_stop_capture;
+      data->init_sequence.timeout = 1000;
+      usb_exchange_async(ssm, &data->init_sequence);
+      break;
+    case CAPTURE_DISABLE_COMPLETE:
+      fpi_ssm_mark_completed(ssm);
+      break;
+  }
 }
-
-static void activate_loop_complete(struct fpi_ssm *ssm)
-{
-	struct fp_img_dev *dev = (struct fp_img_dev *)ssm->priv;
+static int execute_state_change(struct fp_img_dev *dev){
 	struct vfs7552_data *data = (struct vfs7552_data *)dev->priv;
-	int r = ssm->error;
+  struct fpi_ssm *ssm;
 
-  printf("data->deactivating %d, r %d\n", data->deactivating, r);
-	fp_dbg("finishing");
-	if (data->init_sequence.receive_buf != NULL)
-		g_free(data->init_sequence.receive_buf);
-	data->init_sequence.receive_buf = NULL;
-	if (!data->deactivating && !r) {
-		submit_image(ssm, data);
-		fpi_imgdev_report_finger_status(dev, FALSE);
-	}
-	fpi_ssm_free(ssm);
-
-	data->loop_running = FALSE;
-
-	if (data->deactivating) {
-		fpi_imgdev_deactivate_complete(dev);
-	} else if (r) {
-		fpi_imgdev_session_error(dev, r);
-	} else {
-		//start_scan(dev);
-	}
+  fp_dbg("state %d", data->activate_state);
+  switch (data->activate_state) {
+  case IMGDEV_STATE_INACTIVE:
+    // This state is never used...
+    break;
+  case IMGDEV_STATE_AWAIT_FINGER_ON:
+    ssm = fpi_ssm_new(dev->dev, await_finger_on_run_state, AWAIT_FINGER_ON_NUM_STATES);
+    ssm->priv = dev;
+		fpi_ssm_start(ssm, report_finger_on); // await_finger_on_complete
+		break;
+  case IMGDEV_STATE_CAPTURE:
+    ssm = fpi_ssm_new(dev->dev, capture_run_state, CAPTURE_NUM_STATES);
+    ssm->priv = dev;
+    fpi_ssm_start(ssm, submit_image); // await_finger_on_complete
+    break;
+  case IMGDEV_STATE_AWAIT_FINGER_OFF:
+    ssm = fpi_ssm_new(dev->dev, capture_run_state, CAPTURE_NUM_STATES);
+    ssm->priv = dev;
+    fpi_ssm_start(ssm, report_finger_off); // await_finger_on_complete
+    break;
+  }
+  return 0;
 }
-
 
 static void open_loop(struct fpi_ssm *ssm)
 {
@@ -643,9 +674,6 @@ static void open_loop(struct fpi_ssm *ssm)
 		data->init_sequence.stepcount =
 			array_n_elements(vfs7552_initialization);
 		data->init_sequence.actions = vfs7552_initialization;
-		data->init_sequence.device = dev;
-		data->init_sequence.receive_buf =
-			g_malloc0(VFS7552_RECEIVE_BUF_SIZE);
 		data->init_sequence.timeout = VFS7552_DEFAULT_WAIT_TIMEOUT;
 		usb_exchange_async(ssm, &data->init_sequence);
 		break;
@@ -655,10 +683,6 @@ static void open_loop(struct fpi_ssm *ssm)
 static void open_loop_complete(struct fpi_ssm *ssm)
 {
 	struct fp_img_dev *dev = (struct fp_img_dev *)ssm->priv;
-	struct vfs7552_data *data = (struct vfs7552_data *)dev->priv;
-
-	g_free(data->init_sequence.receive_buf);
-	data->init_sequence.receive_buf = NULL;
 
 	fpi_imgdev_open_complete(dev, 0);
 	fpi_ssm_free(ssm);
@@ -671,6 +695,9 @@ static int dev_open(struct fp_img_dev *dev, unsigned long driver_data)
 	int r;
 
 	data = (struct vfs7552_data *)g_malloc0(sizeof(*data));
+  data->init_sequence.device = dev;
+  data->init_sequence.receive_buf =
+    g_malloc0(VFS7552_RECEIVE_BUF_SIZE);
 	data->capture_buffer =
 		(unsigned char *)g_malloc0(VFS7552_RECEIVE_BUF_SIZE);
   data->image =
@@ -703,6 +730,8 @@ static void dev_close(struct fp_img_dev *dev)
 	libusb_release_interface(dev->udev, 0);
 	struct vfs7552_data *data = (struct vfs7552_data *)dev->priv;
 	if (data != NULL) {
+    if(data->init_sequence.receive_buf != NULL)
+      g_free(data->init_sequence.receive_buf);
     g_free(data->capture_buffer);
     g_free(data->image);
 		g_free(data);
@@ -710,20 +739,31 @@ static void dev_close(struct fp_img_dev *dev)
 	fpi_imgdev_close_complete(dev);
 }
 
-static void start_scan(struct fp_img_dev *dev)
-{
-	struct vfs7552_data *data = (struct vfs7552_data *)dev->priv;
-	struct fpi_ssm *ssm;
 
-	data->loop_running = TRUE;
-	fp_dbg("creating ssm");
-	ssm = fpi_ssm_new(dev->dev, activate_loop2, DEV_ACTIVATE_NUM_STATES);
-	ssm->priv = dev;
-	fp_dbg("starting ssm");
-	fpi_ssm_start(ssm, activate_loop_complete);
-	fp_dbg("ssm done, getting out");
+static int dev_change_state(struct fp_img_dev *dev, enum fp_imgdev_state state)
+{
+	struct vfs7552_data *data = dev->priv;
+	switch (state) {
+	case IMGDEV_STATE_INACTIVE:
+	case IMGDEV_STATE_AWAIT_FINGER_ON:
+	case IMGDEV_STATE_CAPTURE:
+  case IMGDEV_STATE_AWAIT_FINGER_OFF:
+		break;
+	default:
+		fp_err("unrecognised state %d", state);
+		return -EINVAL;
+	}
+
+	data->activate_state = state;
+
+	return execute_state_change(dev);
 }
 
+// According to Igor Filatov, the parameter is not so useful:
+// Not really. The same state is sent to dev_change_state after activation has ended with
+// fpi_imgdev_activate_complete. You can ignore it.
+// ALl the commands are sent in open...
+// Maybe we should move open to activate?
 static int dev_activate(struct fp_img_dev *dev, enum fp_imgdev_state state)
 {
 	struct vfs7552_data *data = (struct vfs7552_data *)dev->priv;
@@ -731,15 +771,18 @@ static int dev_activate(struct fp_img_dev *dev, enum fp_imgdev_state state)
 	fp_dbg("device initialized");
 	data->deactivating = FALSE;
 
-	start_scan(dev);
-
+  fpi_imgdev_activate_complete(dev, 0);
 	return 0;
 }
 
 static void dev_deactivate(struct fp_img_dev *dev)
 {
+
+  dev_change_state(dev, IMGDEV_STATE_INACTIVE);
+
 	int r;
 	struct vfs7552_data *data = dev->priv;
+
 	if (data->loop_running) {
 		data->deactivating = TRUE;
 		if (data->flying_transfer) {
@@ -747,8 +790,10 @@ static void dev_deactivate(struct fp_img_dev *dev)
 			if (r < 0)
 				fp_dbg("cancel failed error %d", r);
 		}
-	} else
-		fpi_imgdev_deactivate_complete(dev);
+	} else{
+    fpi_imgdev_deactivate_complete(dev);
+  }
+
 }
 
 static const struct usb_id id_table[] = {
@@ -765,13 +810,13 @@ struct fp_img_driver vfs7552_driver = {
 		.scan_type = FP_SCAN_TYPE_PRESS,
 	},
 
-	.flags = 0,
+	.flags = 0, // What is this?
 	.img_width = VFS7552_IMAGE_WIDTH,
 	.img_height = VFS7552_IMAGE_HEIGHT,
-	.bz3_threshold = 20, // TODO: What is this?
 
 	.open = dev_open,
 	.close = dev_close,
 	.activate = dev_activate,
 	.deactivate = dev_deactivate,
+  .change_state = dev_change_state,
 };
