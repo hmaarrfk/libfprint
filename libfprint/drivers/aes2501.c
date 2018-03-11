@@ -668,7 +668,8 @@ static const struct aes_regwrite init_2[] = {
 	{ AES2501_REG_CTRL1, AES2501_CTRL1_REG_UPDATE },
 };
 
-static const struct aes_regwrite init_3[] __attribute__((unused)) = {
+/*
+static const struct aes_regwrite init_3[] = {
 	{ 0xff, 0x00 },
 	{ AES2501_REG_CTRL1, AES2501_CTRL1_MASTER_RESET },
 	{ AES2501_REG_AUTOCALOFFSET, 0x41 },
@@ -676,6 +677,7 @@ static const struct aes_regwrite init_3[] __attribute__((unused)) = {
 	{ AES2501_REG_DETCTRL, 0x53 },
 	{ AES2501_REG_CTRL1, AES2501_CTRL1_REG_UPDATE },
 };
+*/
 
 static const struct aes_regwrite init_4[] = {
 	{ AES2501_REG_CTRL1, AES2501_CTRL1_MASTER_RESET },
