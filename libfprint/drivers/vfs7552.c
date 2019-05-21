@@ -1,7 +1,7 @@
 /*
- * Validity Sensors, Inc. VFS5011 Fingerprint Reader driver for libfprint
- * Copyright (C) 2013 Arseniy Lartsev <arseniy@chalmers.se>
- *                    AceLan Kao <acelan.kao@canonical.com>
+ * Validity Sensors, Inc. VFS7552 Fingerprint Reader driver for libfprint
+ *                        ID 138a:0091 Validity Sensors, Inc.
+ * Copyright (C) 2013 Mark Harfouche <mark.harfouche@gmail.com>
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -17,6 +17,57 @@
  * License along with this library; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
+
+/* A large chunk of this code is based on a project aimed at simply
+ * getting images from the sensor.
+ *
+ * Find the project at
+ * https://github.com/hmaarrfk/Validity91
+ */
+
+/* Mark's personal notes:
+  I'm not sure how this library will work after you wake up from sleep.
+  I have everything put in open, but maybe it should be init.
+
+  This sensor has a VERY small pixel count compared to other sensors.
+  Specifically, it is only 112x112.
+  The library that is used for detection actually prunes the image to
+  96x96 and discardst the edges (pad_uchar_image).
+  You can see this when you print a binarized image.
+  ```
+  img_bin = fp_img_binarize(img);
+  fp_img_save_to_file(img_bin, "bin.pgm");
+  ```
+
+  The challenge comes in when you consider that the sensor is only 1 cm wide.
+  Now it becomes very difficult for the algorithm to find MINUTIAE.
+  libfprint uses 10 minimum MINUTIAE. (MIN_ACCEPTABLE_MINUTIAE)
+  I normally find 2-4 on my finger, sometimes 5, and rarely 8.
+
+  This makes the enrollment process VERY tedious, and probably more problematically,
+  the verification process.
+
+  I think a few things can be used to solve this:
+  1. The sensor actually takes something like a video.
+    So you could take a bunch of images, and stitch them together at the driver level.
+    That way you would provide maybe a 200x200 pixel image (users move alot).
+    You probably only need a few more pixels to get the algorithm to stop pruning
+    the image so much.
+  2. You could try to create a composite image in the "enrolled" fingerprint process.
+    This is probably what android does.
+  3. Maybe you can try to further reverse engineer the fingerprint sensor?
+  Maybe it can actually output a few more things.
+  4. Someting else clever?
+
+  I think all these changes would be outside the scope of writing a driver for this.
+  I don't think libfprint is designed to actually record a movie of your fingerprints
+  and get an image. I would have to do it a the driver level. Fun fun.
+
+  A few other issues I found with the library:
+  The number of pixels per inch is hard coded: DEFAULT_PPI = 300
+  look for the line:
+  DEFAULT_PPI / (double)25.4
+*/
 
 #include "drivers_api.h"
 #include "vfs7552_proto.h"
