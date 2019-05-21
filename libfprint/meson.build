@@ -146,6 +146,9 @@ foreach driver: drivers
     if driver == 'elan'
         drivers_sources += [ 'drivers/elan.c', 'drivers/elan.h' ]
     endif
+    if driver == 'vfs7552'
+        drivers_sources += [ 'drivers/vfs7552.c', 'drivers/vfs7552_proto.h' ]
+    endif
 endforeach
 
 if aeslib
