@@ -1,7 +1,7 @@
 /*
  * Validity Sensors, Inc. VFS7552 Fingerprint Reader driver for libfprint
  *                        ID 138a:0091 Validity Sensors, Inc.
- * Copyright (C) 2013 Mark Harfouche <mark.harfouche@gmail.com>
+ * Copyright (C) 2018 Mark Harfouche <mark.harfouche@gmail.com>
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -67,6 +67,26 @@
   The number of pixels per inch is hard coded: DEFAULT_PPI = 300
   look for the line:
   DEFAULT_PPI / (double)25.4
+*/
+/* Julius's notes:
+  Build only this driver:
+  ==============================
+
+  Create build directory:
+    meson <builddir>
+
+  Specify build options:
+    meson configure -Ddrivers=vfs7552 <builddir>
+
+  Build the project:
+    cd <builddir>
+    ninja
+
+  Run examples:
+    change permissions of fingerprint device using
+        sudo make permissions
+    from the root of the repository
+    cd into <builddir>/examples and launch the executables as desired.
 */
 
 #include "drivers_api.h"
@@ -138,13 +158,13 @@ struct usbexchange_data {
     int timeout;
 };
 
-//static void start_scan(struct fp_img_dev *dev);
-
 static void async_send_cb(struct libusb_transfer *transfer)
 {
     fpi_ssm *ssm = transfer->user_data;
     struct usbexchange_data *data = fpi_ssm_get_user_data(ssm);
     struct usb_action *action;
+
+    fp_dbg("Validity91: sent transfer with actual length %d", transfer->actual_length);
 
     if (fpi_ssm_get_cur_state(ssm) >= data->stepcount) {
         fp_err("Radiation detected!");
@@ -190,6 +210,8 @@ static void async_recv_cb(struct libusb_transfer *transfer)
     struct usbexchange_data *data = fpi_ssm_get_user_data(ssm);
     struct usb_action *action;
 
+    fp_dbg("Validity91: received transfer with actual length %d", transfer->actual_length);
+
     if (transfer->status != LIBUSB_TRANSFER_COMPLETED) {
         /* Transfer not completed, return IO error */
         fp_err("transfer not completed, status = %d", transfer->status);
@@ -229,20 +251,20 @@ static void async_recv_cb(struct libusb_transfer *transfer)
             fpi_ssm_mark_failed(ssm, -EIO);
             goto out;
         }
-    } else
+    } else {
         fp_dbg("Got %d bytes out of %d", transfer->actual_length,
                transfer->length);
+    }
 
     fpi_ssm_next_state(ssm);
 out:
     libusb_free_transfer(transfer);
 }
 
-static void usbexchange_loop(fpi_ssm *ssm, struct fp_dev *_dev, void *user_data)
+static void usbexchange_loop(fpi_ssm *ssm, struct fp_dev *dev, void *user_data)
 {
     //fp_dbg("VALIDITY91: inside usbexchange_loop");
-    //struct usbexchange_data *data = user_data;
-    struct usbexchange_data *data = (struct usbexchange_data *) fpi_ssm_get_user_data(ssm);
+    struct usbexchange_data *data = user_data;
     if (fpi_ssm_get_cur_state(ssm) >= data->stepcount) {
         fp_err("Bug detected: state %d out of range, only %d steps",
                 fpi_ssm_get_cur_state(ssm), data->stepcount);
@@ -265,7 +287,8 @@ static void usbexchange_loop(fpi_ssm *ssm, struct fp_dev *_dev, void *user_data)
             fpi_ssm_mark_failed(ssm, -ENOMEM);
             return;
         }
-        libusb_fill_bulk_transfer(transfer, fpi_dev_get_usb_dev(FP_DEV(data->device)),
+        fp_dbg("VALIDITY91: sending %d bytes", action->size);
+        libusb_fill_bulk_transfer(transfer, fpi_dev_get_usb_dev(dev),
                       action->endpoint, action->data,
                       action->size, async_send_cb, ssm,
                       data->timeout);
@@ -281,7 +304,7 @@ static void usbexchange_loop(fpi_ssm *ssm, struct fp_dev *_dev, void *user_data)
             fpi_ssm_mark_failed(ssm, -ENOMEM);
             return;
         }
-        libusb_fill_bulk_transfer(transfer, fpi_dev_get_usb_dev(FP_DEV(data->device)),
+        libusb_fill_bulk_transfer(transfer, fpi_dev_get_usb_dev(dev),
                       action->endpoint, data->receive_buf,
                       action->size, async_recv_cb, ssm,
                       data->timeout);
@@ -334,25 +357,25 @@ enum {
 };
 
 enum{
-  DEACTIVATE_SEND_SHUTDOWN,
-  DEACTIVATE_NUM_STATES
+    DEACTIVATE_SEND_SHUTDOWN,
+    DEACTIVATE_NUM_STATES
 };
 enum {
-  AWAIT_FINGER_ON_INIT,
-  AWAIT_FINGER_ON_INTERRUPT_QUERY,
-  AWAIT_FINGER_ON_INTERRUPT_CHECK,
-  AWAIT_FINGER_ON_NUM_STATES
+    AWAIT_FINGER_ON_INIT,
+    AWAIT_FINGER_ON_INTERRUPT_QUERY,
+    AWAIT_FINGER_ON_INTERRUPT_CHECK,
+    AWAIT_FINGER_ON_NUM_STATES
 };
 
 enum {
-  CAPTURE_QUERY_DATA_READY,
-  CAPTURE_CHECK_DATA_READY,
-  CAPTURE_REQUEST_CHUNK,
-  CAPTURE_READ_CHUNK,
-  CAPTURE_COMPLETE,
-  CAPTURE_DISABLE_SENSOR,
-  CAPTURE_DISABLE_COMPLETE,
-  CAPTURE_NUM_STATES
+    CAPTURE_QUERY_DATA_READY,
+    CAPTURE_CHECK_DATA_READY,
+    CAPTURE_REQUEST_CHUNK,
+    CAPTURE_READ_CHUNK,
+    CAPTURE_COMPLETE,
+    CAPTURE_DISABLE_SENSOR,
+    CAPTURE_DISABLE_COMPLETE,
+    CAPTURE_NUM_STATES
 };
 
 enum {
@@ -369,8 +392,8 @@ static void capture_init(struct vfs7552_data *data)
 }
 
 enum {
-  CHUNK_READ_FINISHED,
-  CHUNK_READ_NEED_MORE
+    CHUNK_READ_FINISHED,
+    CHUNK_READ_NEED_MORE
 };
 
 static int process_chunk(struct vfs7552_data *data, int transferred)
@@ -389,7 +412,7 @@ static int process_chunk(struct vfs7552_data *data, int transferred)
     ptr = ptr + 6;
     n_lines = n_bytes_in_chunk / VFS7552_LINE_SIZE;
 
-    for(i = 0; i < n_lines; i++){
+    for(i = 0; i < n_lines; i++) {
         ptr = ptr + 8; // 8 bytes code at the beginning of each line
         memcpy(&data->image[data->image_index], ptr, VFS7552_IMAGE_WIDTH);
         ptr = ptr + VFS7552_IMAGE_WIDTH;
@@ -397,7 +420,7 @@ static int process_chunk(struct vfs7552_data *data, int transferred)
     }
 
     data->chunks_captured = data->chunks_captured + 1;
-    if (data->chunks_captured == VFS7552_IMAGE_CHUNKS){
+    if (data->chunks_captured == VFS7552_IMAGE_CHUNKS) {
         data->image_index = 0;
         data->chunks_captured = 0;
         return CHUNK_READ_FINISHED;
@@ -405,66 +428,64 @@ static int process_chunk(struct vfs7552_data *data, int transferred)
     return CHUNK_READ_NEED_MORE;
 }
 
-void report_finger_off(struct fpi_ssm *ssm, struct fp_dev *d,
+void report_finger_off(struct fpi_ssm *ssm, struct fp_dev *dev,
                  void *user_data){
-    struct fp_img_dev *dev = (struct fp_img_dev*) user_data;
-    //struct fp_img_dev *dev = fpi_ssm_get_user_data(ssm);
+    struct fp_img_dev *img_dev = user_data;
 
-    fpi_imgdev_report_finger_status(dev, FALSE);
+    fpi_imgdev_report_finger_status(img_dev, FALSE);
     fpi_ssm_free(ssm);
 }
 
-void report_finger_on(struct fpi_ssm *ssm, struct fp_dev *d,
+void report_finger_on(struct fpi_ssm *ssm, struct fp_dev *dev,
                  void *user_data){
-    struct fp_img_dev *dev = (struct fp_img_dev*) user_data;
-    //struct fp_img_dev *dev = fpi_ssm_get_user_data(ssm);
+    struct fp_img_dev *img_dev = user_data;
 
-    fpi_imgdev_report_finger_status(dev, TRUE);
+    fpi_imgdev_report_finger_status(img_dev, TRUE);
     fpi_ssm_free(ssm);
 }
 
-void report_deactivate(struct fpi_ssm *ssm, struct fp_dev *d,
+void report_deactivate(struct fpi_ssm *ssm, struct fp_dev *dev,
                  void *user_data){
-    struct fp_img_dev *dev = (struct fp_img_dev*) user_data;
-    //struct fp_img_dev *dev = fpi_ssm_get_user_data(ssm);
+    struct fp_img_dev *img_dev = user_data;
 
-    fpi_imgdev_deactivate_complete(dev);
+    fpi_imgdev_deactivate_complete(img_dev);
     fpi_ssm_free(ssm);
 }
 
 static void
-submit_image(fpi_ssm             *ssm,
-            struct fp_dev *d,
+submit_image(fpi_ssm *ssm,
+            struct fp_dev *dev,
             void *user_data)
 {
-    struct fp_img_dev *dev = fpi_ssm_get_user_data(ssm);
+    struct fp_img_dev *img_dev = fpi_ssm_get_user_data(ssm);
     struct vfs7552_data *data;
 
-    data = FP_INSTANCE_DATA(FP_DEV(dev));
+    data = FP_INSTANCE_DATA(FP_DEV(img_dev));
 
     struct fp_img *img;
 
-    img = fpi_img_new_for_imgdev(dev);
+    img = fpi_img_new_for_imgdev(img_dev);
     memcpy(img->data, data->image, VFS7552_IMAGE_SIZE);
     fp_dbg("Image captured, commiting");
-    fpi_imgdev_image_captured(dev, img);
-    // fpi_ssm_free(ssm);
+    fpi_imgdev_image_captured(img_dev, img);
+    fpi_ssm_free(ssm);
 }
 
 static void chunk_capture_callback(struct libusb_transfer *transfer)
 {
     fpi_ssm *ssm = (fpi_ssm *)transfer->user_data;
-    struct fp_img_dev *dev = fpi_ssm_get_user_data(ssm);
+    struct fp_img_dev *img_dev = fpi_ssm_get_user_data(ssm);
     struct vfs7552_data *data;
 
-    data = FP_INSTANCE_DATA(FP_DEV(dev));
+    data = FP_INSTANCE_DATA(FP_DEV(img_dev));
 
     if ((transfer->status == LIBUSB_TRANSFER_COMPLETED) ||
         (transfer->status == LIBUSB_TRANSFER_TIMED_OUT)) {
-        if (process_chunk(data, transfer->actual_length) == CHUNK_READ_FINISHED)
+        if (process_chunk(data, transfer->actual_length) == CHUNK_READ_FINISHED) {
             fpi_ssm_next_state(ssm);
-        else
+        } else {
             fpi_ssm_jump_to_state(ssm, CAPTURE_REQUEST_CHUNK);
+        }
     } else {
         if (!data->deactivating) {
             fp_err("Failed to capture data");
@@ -556,16 +577,16 @@ struct usb_action vfs7552_request_chunk[] = {
 
 /* ====================== lifprint interface ======================= */
 
-static void await_finger_on_run_state(struct fpi_ssm *ssm, struct fp_dev *d,
+static void await_finger_on_run_state(struct fpi_ssm *ssm, struct fp_dev *dev,
                  void *user_data){
-  unsigned char * receive_buf;
-  struct fp_img_dev *dev = fpi_ssm_get_user_data(ssm);
-  struct vfs7552_data *data; // = (struct vfs7552_data*)dev->priv;
-  data = FP_INSTANCE_DATA(FP_DEV(dev));
-  fp_dbg("state %d", fpi_ssm_get_cur_state(ssm));
+    unsigned char * receive_buf;
+    struct vfs7552_data *data;
+    data = FP_INSTANCE_DATA(dev);
+    fp_dbg("state %d", fpi_ssm_get_cur_state(ssm));
 
-  switch (fpi_ssm_get_cur_state(ssm)){
+    switch (fpi_ssm_get_cur_state(ssm)){
     case AWAIT_FINGER_ON_INIT:
+        fp_dbg("VALIDITY91: AWAIT_FINGER_ON_INIT");
         data->init_sequence.stepcount =
             array_n_elements(vfs7552_initiate_capture);
         data->init_sequence.actions = vfs7552_initiate_capture;
@@ -573,6 +594,7 @@ static void await_finger_on_run_state(struct fpi_ssm *ssm, struct fp_dev *d,
         usb_exchange_async(ssm, &data->init_sequence);
       break;
     case AWAIT_FINGER_ON_INTERRUPT_QUERY:
+        fp_dbg("VALIDITY91: AWAIT_FINGER_ON_INTERRUPT_QUERY");
         data->init_sequence.stepcount =
         array_n_elements(vfs7552_wait_finger_init);
         data->init_sequence.actions = vfs7552_wait_finger_init;
@@ -580,6 +602,7 @@ static void await_finger_on_run_state(struct fpi_ssm *ssm, struct fp_dev *d,
         usb_exchange_async(ssm, &data->init_sequence);
         break;
     case AWAIT_FINGER_ON_INTERRUPT_CHECK:
+        fp_dbg("VALIDITY91: AWAIT_FINGER_ON_INTERRUPT_CHECK");
         receive_buf = ((unsigned char *)data->init_sequence.receive_buf);
         if(receive_buf[0] == interrupt_ok[0]){
             // This seems to mean: "Sensor is all good"
@@ -588,7 +611,7 @@ static void await_finger_on_run_state(struct fpi_ssm *ssm, struct fp_dev *d,
             // This seems to mean: "We detected a finger"
             fpi_ssm_next_state(ssm);
         } else if(receive_buf[0] == interrupt_dont_ask[0]){
-            // THis seems to mean: "We already told you we detected a finger, stop asking us"
+            // This seems to mean: "We already told you we detected a finger, stop asking us"
             // It will not respond to an other request on the interrupt endpoint
             fpi_ssm_next_state(ssm);
         } else {
@@ -596,14 +619,14 @@ static void await_finger_on_run_state(struct fpi_ssm *ssm, struct fp_dev *d,
             fpi_ssm_next_state(ssm);
         }
         break;
-  }
+    }
 }
 
-static void capture_run_state(struct fpi_ssm *ssm, struct fp_dev *d,
+static void capture_run_state(struct fpi_ssm *ssm, struct fp_dev *dev,
                  void *user_data){
-    struct fp_img_dev *dev = fpi_ssm_get_user_data(ssm);
-    struct vfs7552_data *data; // = (struct vfs7552_data*)dev->priv;
-    data = FP_INSTANCE_DATA(FP_DEV(dev));
+    struct fp_img_dev *img_dev = user_data;
+    struct vfs7552_data *data;
+    data = FP_INSTANCE_DATA(dev);
     unsigned char * receive_buf;
     int r;
     fp_dbg("VALIDITY91: state %d", fpi_ssm_get_cur_state(ssm));
@@ -628,7 +651,7 @@ static void capture_run_state(struct fpi_ssm *ssm, struct fp_dev *d,
         } else {
             fp_dbg("Unknown response 0x%02x", receive_buf[0]);
             r = receive_buf[0];
-            fpi_imgdev_session_error(dev, r);
+            fpi_imgdev_session_error(img_dev, r);
             fpi_ssm_mark_failed(ssm, r);
         }
         break;
@@ -641,35 +664,38 @@ static void capture_run_state(struct fpi_ssm *ssm, struct fp_dev *d,
         usb_exchange_async(ssm, &data->init_sequence);
         break;
         case CAPTURE_READ_CHUNK:
-        r = capture_chunk_async(data, fpi_dev_get_usb_dev(FP_DEV(dev)),
+        r = capture_chunk_async(data, fpi_dev_get_usb_dev(dev),
               1000, ssm);
         if (r != 0) {
             fp_err("Failed to capture data");
-            fpi_imgdev_session_error(dev, r);
+            fpi_imgdev_session_error(img_dev, r);
             fpi_ssm_mark_failed(ssm, r);
         }
         break;
     case CAPTURE_COMPLETE:
-        if(data->activate_state == IMGDEV_STATE_CAPTURE){
+        if(data->activate_state == IMGDEV_STATE_CAPTURE) {
             fpi_ssm_mark_completed(ssm);
-        } else if(data->activate_state == IMGDEV_STATE_AWAIT_FINGER_OFF){
+        } else if(data->activate_state == IMGDEV_STATE_AWAIT_FINGER_OFF) {
             int mean = 0;
             int variance = 0;
 
-            for(int i = 0; i < VFS7552_IMAGE_SIZE; i++)
+            for(int i = 0; i < VFS7552_IMAGE_SIZE; i++) {
                 mean = mean + data->image[i];
+            }
             mean = mean / VFS7552_IMAGE_SIZE;
 
-            for(int i = 0; i < VFS7552_IMAGE_SIZE; i++)
+            for(int i = 0; i < VFS7552_IMAGE_SIZE; i++) {
                 variance = variance + (data->image[i] - mean) * (data->image[i] - mean);
+            }
             variance = variance / (VFS7552_IMAGE_SIZE - 1);
 
             fp_dbg("mean = %d, variance = %d\n", mean, variance);
 
-            if(variance < VFS7552_VARIANCE_THRESHOLD)
+            if(variance < VFS7552_VARIANCE_THRESHOLD) {
                 fpi_ssm_jump_to_state(ssm, CAPTURE_DISABLE_SENSOR);
-            else
-            fpi_ssm_jump_to_state(ssm, CAPTURE_QUERY_DATA_READY);
+            } else {
+                fpi_ssm_jump_to_state(ssm, CAPTURE_QUERY_DATA_READY);
+            }
         }
         break;
 
@@ -686,19 +712,19 @@ static void capture_run_state(struct fpi_ssm *ssm, struct fp_dev *d,
     }
 }
 
-static void open_loop(fpi_ssm *ssm, struct fp_dev *_dev, void *user_data)
+static void open_loop(fpi_ssm *ssm, struct fp_dev *dev, void *user_data)
 {
-    struct fp_img_dev *dev = user_data;
+    struct fp_img_dev *img_dev = user_data;
     struct vfs7552_data *data;
 
-    data = FP_INSTANCE_DATA(_dev);
+    data = FP_INSTANCE_DATA(dev);
 
     switch (fpi_ssm_get_cur_state(ssm)) {
     case DEV_OPEN_START:
         data->init_sequence.stepcount =
             G_N_ELEMENTS(vfs7552_initialization);
         data->init_sequence.actions = vfs7552_initialization;
-        data->init_sequence.device = dev;
+        data->init_sequence.device = img_dev;
         data->init_sequence.receive_buf =
             g_malloc0(VFS7552_RECEIVE_BUF_SIZE);
         data->init_sequence.timeout = VFS7552_DEFAULT_WAIT_TIMEOUT;
@@ -707,22 +733,21 @@ static void open_loop(fpi_ssm *ssm, struct fp_dev *_dev, void *user_data)
     };
 }
 
-static void open_loop_complete(fpi_ssm *ssm, struct fp_dev *_dev, void *user_data)
+static void open_loop_complete(fpi_ssm *ssm, struct fp_dev *dev, void *user_data)
 {
-    struct fp_img_dev *dev = user_data;
+    struct fp_img_dev *img_dev = user_data;
     struct vfs7552_data *data;
 
-    data = FP_INSTANCE_DATA(_dev);
+    data = FP_INSTANCE_DATA(dev);
     g_free(data->init_sequence.receive_buf);
     data->init_sequence.receive_buf = NULL;
 
-    fpi_imgdev_open_complete(dev, 0);
+    fpi_imgdev_open_complete(img_dev, 0);
     fpi_ssm_free(ssm);
 }
 
-static int dev_open(struct fp_img_dev *dev, unsigned long driver_data)
+static int dev_open(struct fp_img_dev *img_dev, unsigned long driver_data)
 {
-
     struct vfs7552_data *data;
     int r;
 
@@ -731,62 +756,62 @@ static int dev_open(struct fp_img_dev *dev, unsigned long driver_data)
         (unsigned char *)g_malloc0(VFS7552_RECEIVE_BUF_SIZE);
     data->image =
         (unsigned char*)g_malloc0(VFS7552_IMAGE_HEIGHT * VFS7552_IMAGE_WIDTH);
-    fp_dev_set_instance_data(FP_DEV(dev), data);
+    fp_dev_set_instance_data(FP_DEV(img_dev), data);
 
-    r = libusb_reset_device(fpi_dev_get_usb_dev(FP_DEV(dev)));
+    r = libusb_reset_device(fpi_dev_get_usb_dev(FP_DEV(img_dev)));
     if (r != 0) {
         fp_err("Failed to reset the device");
         return r;
     }
 
-    r = libusb_claim_interface(fpi_dev_get_usb_dev(FP_DEV(dev)), 0);
+    r = libusb_claim_interface(fpi_dev_get_usb_dev(FP_DEV(img_dev)), 0);
     if (r != 0) {
         fp_err("Failed to claim interface: %s", libusb_error_name(r));
         return r;
     }
 
     fpi_ssm *ssm;
-    ssm = fpi_ssm_new(FP_DEV(dev), open_loop, DEV_OPEN_NUM_STATES, dev);
+    ssm = fpi_ssm_new(FP_DEV(img_dev), open_loop, DEV_OPEN_NUM_STATES, img_dev);
     fpi_ssm_start(ssm, open_loop_complete);
 
     return 0;
 }
 
-static int execute_state_change(struct fp_img_dev *dev){
+static int execute_state_change(struct fp_img_dev *img_dev){
     struct vfs7552_data *data;
-    data = FP_INSTANCE_DATA(FP_DEV(dev));
-  struct fpi_ssm *ssm;
+    data = FP_INSTANCE_DATA(FP_DEV(img_dev));
+    struct fpi_ssm *ssm;
 
-  fp_dbg("VALIDITY91: state %d", data->activate_state);
-  switch (data->activate_state) {
-  case IMGDEV_STATE_INACTIVE:
-    fp_dbg("VALIDITY91: IMGDEV_STATE_INACTIVE");
-    // This state is never used...
-    break;
-  case IMGDEV_STATE_AWAIT_FINGER_ON:
-    fp_dbg("VALIDITY91: IMGDEV_STATE_AWAIT_FINGER_ON");
-    ssm = fpi_ssm_new(FP_DEV(dev), await_finger_on_run_state, AWAIT_FINGER_ON_NUM_STATES, dev);
-    fpi_ssm_start(ssm, report_finger_on); // await_finger_on_complete
-    break;
-  case IMGDEV_STATE_CAPTURE:
-    fp_dbg("VALIDITY91: IMGDEV_STATE_CAPTURE");
-    ssm = fpi_ssm_new(FP_DEV(dev), capture_run_state, CAPTURE_NUM_STATES, dev);
-    fpi_ssm_start(ssm, submit_image); // await_finger_on_complete
-    break;
-  case IMGDEV_STATE_AWAIT_FINGER_OFF:
-    fp_dbg("VALIDITY91: IMGDEV_STATE_AWAIT_FINGER_OFF");
-    ssm = fpi_ssm_new(FP_DEV(dev), capture_run_state, CAPTURE_NUM_STATES, dev);
-    fpi_ssm_start(ssm, report_finger_off); // await_finger_on_complete
-    break;
-  }
-  return 0;
+    fp_dbg("VALIDITY91: state %d", data->activate_state);
+    switch (data->activate_state) {
+    case IMGDEV_STATE_INACTIVE:
+        fp_dbg("VALIDITY91: IMGDEV_STATE_INACTIVE");
+        // This state is never used...
+        break;
+    case IMGDEV_STATE_AWAIT_FINGER_ON:
+        fp_dbg("VALIDITY91: IMGDEV_STATE_AWAIT_FINGER_ON");
+        ssm = fpi_ssm_new(FP_DEV(img_dev), await_finger_on_run_state, AWAIT_FINGER_ON_NUM_STATES, img_dev);
+        fpi_ssm_start(ssm, report_finger_on); // await_finger_on_complete
+        break;
+    case IMGDEV_STATE_CAPTURE:
+        fp_dbg("VALIDITY91: IMGDEV_STATE_CAPTURE");
+        ssm = fpi_ssm_new(FP_DEV(img_dev), capture_run_state, CAPTURE_NUM_STATES, img_dev);
+        fpi_ssm_start(ssm, submit_image); // await_finger_on_complete
+        break;
+    case IMGDEV_STATE_AWAIT_FINGER_OFF:
+        fp_dbg("VALIDITY91: IMGDEV_STATE_AWAIT_FINGER_OFF");
+        ssm = fpi_ssm_new(FP_DEV(img_dev), capture_run_state, CAPTURE_NUM_STATES, img_dev);
+        fpi_ssm_start(ssm, report_finger_off); // await_finger_on_complete
+        break;
+    }
+    return 0;
 }
 
-static int dev_change_state(struct fp_img_dev *dev, enum fp_imgdev_state state)
+static int dev_change_state(struct fp_img_dev *img_dev, enum fp_imgdev_state state)
 {
     fp_dbg("VALIDITY91: changing state");
     struct vfs7552_data *data;
-    data = FP_INSTANCE_DATA(FP_DEV(dev));
+    data = FP_INSTANCE_DATA(FP_DEV(img_dev));
     switch (state) {
     case IMGDEV_STATE_INACTIVE:
     case IMGDEV_STATE_AWAIT_FINGER_ON:
@@ -800,63 +825,47 @@ static int dev_change_state(struct fp_img_dev *dev, enum fp_imgdev_state state)
 
     data->activate_state = state;
 
-    return execute_state_change(dev);
+    return execute_state_change(img_dev);
 }
 
 
-static void dev_close(struct fp_img_dev *dev)
+static void dev_close(struct fp_img_dev *img_dev)
 {
-    libusb_release_interface(fpi_dev_get_usb_dev(FP_DEV(dev)), 0);
+    libusb_release_interface(fpi_dev_get_usb_dev(FP_DEV(img_dev)), 0);
     struct vfs7552_data *data;
-    data = FP_INSTANCE_DATA(FP_DEV(dev));
+    data = FP_INSTANCE_DATA(FP_DEV(img_dev));
     if (data != NULL) {
-        if(data->init_sequence.receive_buf != NULL)
+        if(data->init_sequence.receive_buf != NULL) {
             g_free(data->init_sequence.receive_buf);
+        }
         g_free(data->capture_buffer);
-        //g_slist_free_full(data->rows, g_free);
         g_free(data->image);
         g_free(data);
     }
-    fpi_imgdev_close_complete(dev);
+    fpi_imgdev_close_complete(img_dev);
 }
 
-/*
-static void start_scan(struct fp_img_dev *dev)
-{
-    struct vfs7552_data *data;
-    fpi_ssm *ssm;
-
-    data = FP_INSTANCE_DATA(FP_DEV(dev));
-    data->loop_running = TRUE;
-    fp_dbg("creating ssm");
-    ssm = fpi_ssm_new(FP_DEV(dev), activate_loop, DEV_ACTIVATE_NUM_STATES, dev);
-    fp_dbg("starting ssm");
-    fpi_ssm_start(ssm, activate_loop_complete);
-    fp_dbg("ssm done, getting out");
-}
-*/
-
-static int dev_activate(struct fp_img_dev *dev, enum fp_imgdev_state state)
+static int dev_activate(struct fp_img_dev *img_dev, enum fp_imgdev_state state)
 {
     struct vfs7552_data *data;
 
-    data = FP_INSTANCE_DATA(FP_DEV(dev));
+    data = FP_INSTANCE_DATA(FP_DEV(img_dev));
 
     fp_dbg("VALIDITY91: device initialized");
     data->deactivating = FALSE;
 
-    fpi_imgdev_activate_complete(dev, 0);
+    fpi_imgdev_activate_complete(img_dev, 0);
     return 0;
 }
 
-static void dev_deactivate(struct fp_img_dev *dev)
+static void dev_deactivate(struct fp_img_dev *img_dev)
 {
-    dev_change_state(dev, IMGDEV_STATE_INACTIVE);
+    dev_change_state(img_dev, IMGDEV_STATE_INACTIVE);
 
     int r;
     struct vfs7552_data *data;
 
-    data = FP_INSTANCE_DATA(FP_DEV(dev));
+    data = FP_INSTANCE_DATA(FP_DEV(img_dev));
     if (data->loop_running) {
         data->deactivating = TRUE;
         if (data->flying_transfer) {
@@ -864,16 +873,15 @@ static void dev_deactivate(struct fp_img_dev *dev)
             if (r < 0)
                 fp_dbg("cancel failed error %d", r);
         }
-    } else
-        fpi_imgdev_deactivate_complete(dev);
+    } else {
+        fpi_imgdev_deactivate_complete(img_dev);
+    }
 }
 
 static const struct usb_id id_table[] = {
-    // Until you can reliably detect a fingerprint,
-    // we should not ship this driver for any device.
     /* Validity device from some Dell XPS laptops (9560, 9360 at least) */
     { .vendor = 0x138a, .product = 0x0091 }, 
-    { 0, 0, 0, },
+    //{ 0, 0, 0, },
 };
 
 struct fp_img_driver vfs7552_driver = {
@@ -885,10 +893,9 @@ struct fp_img_driver vfs7552_driver = {
         .scan_type = FP_SCAN_TYPE_PRESS,
     },
 
-    .flags = 0,
+    .flags = 0, // What is this?
     .img_width = VFS7552_IMAGE_WIDTH,
     .img_height = VFS7552_IMAGE_HEIGHT,
-    //.bz3_threshold = 20,
 
     .open = dev_open,
     .close = dev_close,
